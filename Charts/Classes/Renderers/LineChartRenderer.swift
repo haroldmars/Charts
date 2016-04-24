@@ -246,12 +246,7 @@ public class LineChartRenderer: LineRadarChartRenderer
 			let circlePaths = getCirclesPath(context: context, dataSet: dataSet)
 
 			//holes
-			CGContextSetLineWidth(context, 3) //TODO: how to fill the hole correctly?
-			CGContextBeginPath(context)
-			CGContextAddPath(context, circlePaths.1)
-			CGContextReplacePathWithStrokedPath(context)
-			CGContextAddRect(context, CGRect(x: 0,y: 0,width: 400,height: 400))
-			CGContextEOClip(context)
+			clipOutCircleHoles(context, holes: circlePaths.1)
 			//lines
 			CGContextSetLineWidth(context, dataSet.lineWidth)
 			CGContextBeginPath(context)
@@ -780,6 +775,18 @@ public class LineChartRenderer: LineRadarChartRenderer
 		}
 		return (circlesPath, holesPath)
 	}
+	private func clipOutCircleHoles(context: CGContext, holes: CGPath)
+	{
+		let size = CGSizeMake(
+			CGFloat(CGBitmapContextGetWidth(context)),
+			CGFloat(CGBitmapContextGetHeight(context)))
+		let scale = UIScreen.mainScreen().scale
+
+		CGContextBeginPath(context)
+		CGContextAddPath(context, holes)
+		CGContextAddRect(context, CGRect(x: 0,y: 0,width: size.width/scale,height: size.height/scale))
+		CGContextEOClip(context)
+	}
     private func drawCircles(context context: CGContext)
     {
         guard let
@@ -801,10 +808,11 @@ public class LineChartRenderer: LineRadarChartRenderer
 
 			if gradient != nil
 			{
-				CGContextSetLineWidth(context, dataSet.lineWidth)
+				//holes
+				clipOutCircleHoles(context, holes: paths.1)
+				//circles
 				CGContextBeginPath(context)
 				CGContextAddPath(context, paths.0)
-				CGContextReplacePathWithStrokedPath(context)
 				CGContextClip(context)
 
 				CGContextDrawLinearGradient(context, gradient!.0, gradient!.1, gradient!.2, [CGGradientDrawingOptions.DrawsAfterEndLocation, CGGradientDrawingOptions.DrawsBeforeStartLocation])
