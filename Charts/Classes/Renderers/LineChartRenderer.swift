@@ -121,6 +121,9 @@ public class LineChartRenderer: LineRadarChartRenderer
 				if (th < 0)
 				{
 					th = 0
+				}
+				if (th == 0)
+				{
 					if (limits.count != 0)
 					{
 						colors.removeAll()
