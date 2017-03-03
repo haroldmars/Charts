@@ -172,12 +172,36 @@ open class LineChartRenderer: LineRadarRenderer
             
             drawCubicFill(context: context, dataSet: dataSet, spline: fillPath!, matrix: valueToPixelMatrix, bounds: _xBounds)
         }
-        
-        context.beginPath()
-        context.addPath(cubicPath)
-        context.setStrokeColor(drawingColor.cgColor)
-        context.strokePath()
-        
+		
+		let drawTransparentCircleHole = (dataSet.circleHoleColor == nil || dataSet.circleHoleColor == NSUIColor.clear)
+		let circlePaths = getCirclesPath(context: context, dataSet: dataSet)
+
+		if let gradient = prepareLimitLineAsGradient(context: context, dataSet: dataSet)
+		{
+			//holes
+			clipOutCircleHoles(context: context, holes: circlePaths.1)
+			//lines
+			context.setLineWidth(dataSet.lineWidth)
+			context.beginPath()
+			context.addPath(cubicPath)
+			context.replacePathWithStrokedPath()
+			context.clip()
+
+			context.drawLinearGradient(gradient.0, start: gradient.1, end: gradient.2, options: [CGGradientDrawingOptions.drawsAfterEndLocation, CGGradientDrawingOptions.drawsBeforeStartLocation])
+		}
+		else
+		{
+			if (drawTransparentCircleHole)
+			{
+				//holes
+				clipOutCircleHoles(context: context, holes: circlePaths.1)
+			}
+			context.beginPath()
+			context.addPath(cubicPath)
+			context.setStrokeColor(drawingColor.cgColor)
+			context.strokePath()
+		}
+		
         context.restoreGState()
     }
     
@@ -600,116 +624,217 @@ open class LineChartRenderer: LineRadarRenderer
     {
         drawCircles(context: context)
     }
-    
-    fileprivate func drawCircles(context: CGContext)
-    {
-        guard
-            let dataProvider = dataProvider,
-            let lineData = dataProvider.lineData,
-            let animator = animator,
-            let viewPortHandler = self.viewPortHandler
-            else { return }
-        
-        let phaseY = animator.phaseY
-        
-        let dataSets = lineData.dataSets
-        
-        var pt = CGPoint()
-        var rect = CGRect()
-        
-        context.saveGState()
-        
-        for i in 0 ..< dataSets.count
-        {
-            guard let dataSet = lineData.getDataSetByIndex(i) as? ILineChartDataSet else { continue }
-            
-            if !dataSet.isVisible || !dataSet.isDrawCirclesEnabled || dataSet.entryCount == 0
-            {
-                continue
-            }
-            
-            let trans = dataProvider.getTransformer(forAxis: dataSet.axisDependency)
-            let valueToPixelMatrix = trans.valueToPixelMatrix
-            
-            _xBounds.set(chart: dataProvider, dataSet: dataSet, animator: animator)
-            
-            let circleRadius = dataSet.circleRadius
-            let circleDiameter = circleRadius * 2.0
-            let circleHoleRadius = dataSet.circleHoleRadius
-            let circleHoleDiameter = circleHoleRadius * 2.0
-            
-            let drawCircleHole = dataSet.isDrawCircleHoleEnabled &&
-                circleHoleRadius < circleRadius &&
-                circleHoleRadius > 0.0
-            let drawTransparentCircleHole = drawCircleHole &&
-                (dataSet.circleHoleColor == nil ||
-                    dataSet.circleHoleColor == NSUIColor.clear)
-            
-            for j in stride(from: _xBounds.min, through: _xBounds.range + _xBounds.min, by: 1)
-            {
-                guard let e = dataSet.entryForIndex(j) else { break }
+	
+	fileprivate func prepareLimitLineAsGradient(context: CGContext, dataSet: ILineChartDataSet) -> (CGGradient, CGPoint, CGPoint)?
+	{
+		guard
+			let trans = dataProvider?.getTransformer(forAxis: dataSet.axisDependency),
+			let animator = animator
+			else { return nil }
+		let phaseY = animator.phaseY
+		
+		let yl = dataProvider?.getAxis(YAxis.AxisDependency.left)
+		if ((yl?.limitLines.count)! > 0)
+		{
+			let cnt = (yl?.limitLines.count)!
+			var colors = [CGColor]()
+			var limits = [CGFloat]()
+			let maxValue = (yl?.limitLines)![cnt-1].limit
+			for var line in (yl?.limitLines)!
+			{
+				let maxp = dataSet.yMax/maxValue
+				let minp = dataSet.yMin/maxValue
+				var th = (line.limit/maxValue - minp) / (maxp-minp+0.0001)
+				if (th > 1)
+				{
+					if (colors.count > 0)
+					{
+						break;
+					}
+					else
+					{
+						th = 1
+					}
+				}
+				if (th < 0)
+				{
+					th = 0
+				}
+				if (th == 0)
+				{
+					if (limits.count != 0)
+					{
+						colors.removeAll()
+						limits.removeAll()
+					}
+				}
+				if (colors.count > 0)
+				{
+					colors.append(colors[colors.count-1])
+					limits.append(CGFloat(th-0.0001))
+				}
+				colors.append(line.lineColor.cgColor)
+				limits.append(CGFloat(th))
+			}
+			
+			let baseSpace = CGColorSpaceCreateDeviceRGB()
+			let gradient = CGGradient(colorsSpace: baseSpace, colors: colors as CFArray, locations: limits)
+			if (gradient == nil)
+			{
+				return nil
+			}
+			
+			var startPointBuffer = CGPoint()
+			startPointBuffer.x = 0
+			startPointBuffer.y = CGFloat(dataSet.yMin * phaseY)
+			var endPointBuffer = CGPoint()
+			endPointBuffer.x = 0
+			endPointBuffer.y = CGFloat(dataSet.yMax * phaseY)
+			trans.pointValueToPixel(&startPointBuffer)
+			trans.pointValueToPixel(&endPointBuffer)
+			
+			return (gradient!, startPointBuffer, endPointBuffer)
+		}
+		return nil
+	}
+	fileprivate func clipOutCircleHoles(context: CGContext, holes: CGPath)
+	{
+		let scale = UIScreen.main.scale
+		
+		context.beginPath()
+		context.addPath(holes)
+		context.addRect(CGRect(x: 0,y: 0,width: CGFloat(context.width)/scale,height: CGFloat(context.height)/scale))
+		context.clip(using: .evenOdd)
+	}
+	fileprivate func getCirclesPath(context: CGContext, dataSet: ILineChartDataSet) -> (CGPath, CGPath)
+	{
+		let circlesPath = CGMutablePath()
+		let holesPath = CGMutablePath()
+		var pt = CGPoint()
+		var rect = CGRect()
 
-                pt.x = CGFloat(e.x)
-                pt.y = CGFloat(e.y * phaseY)
-                pt = pt.applying(valueToPixelMatrix)
-                
-                if (!viewPortHandler.isInBoundsRight(pt.x))
-                {
-                    break
-                }
-                
-                // make sure the circles don't do shitty things outside bounds
-                if (!viewPortHandler.isInBoundsLeft(pt.x) || !viewPortHandler.isInBoundsY(pt.y))
-                {
-                    continue
-                }
-                
-                context.setFillColor(dataSet.getCircleColor(atIndex: j)!.cgColor)
-                
-                rect.origin.x = pt.x - circleRadius
-                rect.origin.y = pt.y - circleRadius
-                rect.size.width = circleDiameter
-                rect.size.height = circleDiameter
-                
-                if drawTransparentCircleHole
-                {
-                    // Begin path for circle with hole
-                    context.beginPath()
-                    context.addEllipse(in: rect)
-                    
-                    // Cut hole in path
-                    rect.origin.x = pt.x - circleHoleRadius
-                    rect.origin.y = pt.y - circleHoleRadius
-                    rect.size.width = circleHoleDiameter
-                    rect.size.height = circleHoleDiameter
-                    context.addEllipse(in: rect)
-                    
-                    // Fill in-between
-                    context.fillPath(using: .evenOdd)
-                }
-                else
-                {
-                    context.fillEllipse(in: rect)
-                    
-                    if drawCircleHole
-                    {
-                        context.setFillColor(dataSet.circleHoleColor!.cgColor)
-                     
-                        // The hole rect
-                        rect.origin.x = pt.x - circleHoleRadius
-                        rect.origin.y = pt.y - circleHoleRadius
-                        rect.size.width = circleHoleDiameter
-                        rect.size.height = circleHoleDiameter
-                        
-                        context.fillEllipse(in: rect)
-                    }
-                }
-            }
-        }
-        
-        context.restoreGState()
-    }
-    
+		guard
+			let dataProvider = dataProvider,
+			let lineData = dataProvider.lineData,
+			let animator = animator,
+			let viewPortHandler = self.viewPortHandler
+			else { return (circlesPath, holesPath) }
+		
+		let phaseY = animator.phaseY
+
+		let trans = dataProvider.getTransformer(forAxis: dataSet.axisDependency)
+		let valueToPixelMatrix = trans.valueToPixelMatrix
+		
+		_xBounds.set(chart: dataProvider, dataSet: dataSet, animator: animator)
+		
+		let circleRadius = dataSet.circleRadius
+		let circleDiameter = circleRadius * 2.0
+		let circleHoleRadius = dataSet.circleHoleRadius
+		let circleHoleDiameter = circleHoleRadius * 2.0
+		
+		let drawCircleHole = dataSet.isDrawCircleHoleEnabled &&
+			circleHoleRadius < circleRadius &&
+			circleHoleRadius > 0.0
+		let drawTransparentCircleHole = drawCircleHole &&
+			(dataSet.circleHoleColor == nil ||
+				dataSet.circleHoleColor == NSUIColor.clear)
+		
+		for j in stride(from: _xBounds.min, through: _xBounds.range + _xBounds.min, by: 1)
+		{
+			guard let e = dataSet.entryForIndex(j) else { break }
+			
+			pt.x = CGFloat(e.x)
+			pt.y = CGFloat(e.y * phaseY)
+			pt = pt.applying(valueToPixelMatrix)
+			
+			if (!viewPortHandler.isInBoundsRight(pt.x))
+			{
+				break
+			}
+			
+			// make sure the circles don't do shitty things outside bounds
+			if (!viewPortHandler.isInBoundsLeft(pt.x) || !viewPortHandler.isInBoundsY(pt.y))
+			{
+				continue
+			}
+			
+			context.setFillColor(dataSet.getCircleColor(atIndex: j)!.cgColor)
+			
+			rect.origin.x = pt.x - circleRadius
+			rect.origin.y = pt.y - circleRadius
+			rect.size.width = circleDiameter
+			rect.size.height = circleDiameter
+			circlesPath.addEllipse(in: rect)
+
+			rect.origin.x = pt.x - circleHoleRadius
+			rect.origin.y = pt.y - circleHoleRadius
+			rect.size.width = circleHoleDiameter
+			rect.size.height = circleHoleDiameter
+			holesPath.addEllipse(in: rect)
+		}
+		return (circlesPath, holesPath)
+	}
+	fileprivate func drawCircles(context: CGContext)
+	{
+		guard
+			let dataProvider = dataProvider,
+			let lineData = dataProvider.lineData
+			else { return }
+		
+		let dataSets = lineData.dataSets
+
+		context.saveGState()
+		
+		for i in 0 ..< dataSets.count
+		{
+			guard let dataSet = lineData.getDataSetByIndex(i) as? ILineChartDataSet else { continue }
+			
+			let paths = getCirclesPath(context: context, dataSet: dataSet)
+			let gradient = prepareLimitLineAsGradient(context: context, dataSet: dataSet)
+
+			let circleRadius = dataSet.circleRadius
+			let circleDiameter = circleRadius * 2.0
+			let circleHoleRadius = dataSet.circleHoleRadius
+			let circleHoleDiameter = circleHoleRadius * 2.0
+
+			let drawCircleHole = dataSet.isDrawCircleHoleEnabled &&
+				circleHoleRadius < circleRadius &&
+				circleHoleRadius > 0.0
+			let drawTransparentCircleHole = drawCircleHole &&
+				(dataSet.circleHoleColor == nil ||
+					dataSet.circleHoleColor == NSUIColor.clear)
+
+			if gradient != nil
+			{
+				//holes
+				clipOutCircleHoles(context: context, holes: paths.1)
+				//circles
+				context.beginPath()
+				context.addPath(paths.0)
+				context.clip()
+				
+				context.drawLinearGradient(gradient!.0, start: gradient!.1, end: gradient!.2, options: [CGGradientDrawingOptions.drawsAfterEndLocation, CGGradientDrawingOptions.drawsBeforeStartLocation])
+			}
+			else
+			{
+				if (drawCircleHole)
+				{
+					if (drawTransparentCircleHole)
+					{
+						//holes
+						clipOutCircleHoles(context: context, holes: paths.1)
+					}
+					context.beginPath()
+					context.addPath(paths.0)
+					context.setFillColor(dataSet.getCircleColor(atIndex: 0)!.cgColor)
+					context.fillPath()
+				}
+			}
+		}
+		
+		context.restoreGState()
+	}
+		
     open override func drawHighlighted(context: CGContext, indices: [Highlight])
     {
         guard
